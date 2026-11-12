@@ -172,7 +172,7 @@ const ctx = canvas.getContext("2d");
 const video = document.getElementById("video");
 
 // ==================================================
-// 八個基礎元素設定（自動對應 images/ 內的圖片）
+// 八個基礎元素設定
 // ==================================================
 const baseElementsInfo = [
   { name: "天", desc: "至高意志與無垠蒼穹，具備統御大局的宏觀視野。", path: "images/天.png" },
@@ -192,7 +192,7 @@ baseElementsInfo.forEach(el => {
 });
 
 // ==================================================
-// 建立 80 個超大量標誌粒子（高速飄動）
+// 建立 80 個超大量標誌粒子
 // ==================================================
 let elements = [];
 let W = window.innerWidth;
@@ -212,8 +212,8 @@ function initParticles() {
         x: Math.random() * (W + 400) - 200,
         y: Math.random() * (H + 400) - 200,
         angle: Math.random() * Math.PI * 2,
-        speedX: (Math.random() - 0.5) * 12, // 提升飄動速度
-        speedY: (Math.random() - 0.5) * 12, // 提升飄動速度
+        speedX: (Math.random() - 0.5) * 12,
+        speedY: (Math.random() - 0.5) * 12,
         rotation: (Math.random() - 0.5) * 0.08,
         progress: 0
       });
@@ -238,9 +238,10 @@ let introTimer = null;
 let currentIntroIndex = 0;
 let okStartTime = null;
 let poseStartTime = null;
-let holdStartTime = null; // 磁吸停留計時
-let thumbsUpStartTime = null; // 防誤觸比讚計時
+let holdStartTime = null;
+let thumbsUpStartTime = null;
 let capturedPose = null;
+let frozenVideoSnapshot = null;
 let latestFaceBox = null;
 let isAiLoaded = false;
 
@@ -284,7 +285,7 @@ window.startSystem = async function() {
     if (introTimer) clearInterval(introTimer);
     introTimer = setInterval(() => {
       currentIntroIndex = (currentIntroIndex + 1) % baseElementsInfo.length;
-    }, 100); // 更快的快轉速度
+    }, 100);
 
     requestAnimationFrame(loop);
   } catch (error) {
@@ -371,7 +372,7 @@ function loop() {
       const remain = 2 - (Date.now() - okStartTime) / 1000;
       if (remain <= 0) {
         if (introTimer) clearInterval(introTimer);
-        phase = "posing";
+        phase = "posing"; // 進入隨意擺姿勢階段（此時相機保持動態）
         poseStartTime = Date.now();
         okStartTime = null;
       } else {
@@ -385,32 +386,50 @@ function loop() {
     return;
   }
 
-  // 2. 攝影機畫面背景
-  if (video.readyState >= 2) {
-    ctx.save();
-    ctx.translate(W, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(video, 0, 0, W, H);
-    ctx.restore();
+  // 2. 判斷背景是要渲染動態相機畫面還是暫停畫面
+  if (phase === "posing" || phase === "intro") {
+    // 擺姿勢階段：相機保持動態即時串流
+    if (video.readyState >= 2) {
+      ctx.save();
+      ctx.translate(W, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, W, H);
+      ctx.restore();
+      ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+      ctx.fillRect(0, 0, W, H);
+    }
+  } else if (frozenVideoSnapshot) {
+    // 元素聚集並停留展示階段：渲染暫停（定格）畫面
+    ctx.drawImage(frozenVideoSnapshot, 0, 0, W, H);
     ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
-    ctx.fillRect(0, 0, W, H);
-  } else {
-    ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, W, H);
   }
 
-  // 階段：擺姿勢 5 秒
+  // 階段：隨意擺姿勢 3 秒（相機正常動態運作）
   if (phase === "posing") {
-    const remain = 5 - (Date.now() - poseStartTime) / 1000;
-    setStatus(`請擺出你的代表姿勢！ ${Math.max(0, Math.ceil(remain))}s`);
+    const remain = 3 - (Date.now() - poseStartTime) / 1000;
+    setStatus(`請隨意擺出姿勢！ ${Math.max(0, Math.ceil(remain))}s`);
     if (remain <= 0) {
       capturedPose = pose;
+      
+      // 在 3 秒結束、準備磁吸聚集的「瞬間」，立刻截取並暫停相機畫面
+      const snap = document.createElement("canvas");
+      snap.width = W;
+      snap.height = H;
+      const sctx = snap.getContext("2d");
+      sctx.save();
+      sctx.translate(W, 0);
+      sctx.scale(-1, 1);
+      sctx.drawImage(video, 0, 0, W, H);
+      sctx.restore();
+      frozenVideoSnapshot = snap;
+
       attractParticlesToBody(pose);
       phase = "flying";
     }
   }
 
-  // 階段：磁鐵包覆並停留展示 2.5 秒
+  // 階段：磁鐵包覆並在畫面上「暫停停留展示」2.5 秒
   if (phase === "flying") {
     setStatus("元素融合中...");
     const finished = elements.every(el => el.progress >= 1);
@@ -425,7 +444,7 @@ function loop() {
     }
   }
 
-  // 結果畫面中的比讚返回偵測（需持續 1.5 秒防誤觸）
+  // 階段：結果畫面（此時才允許比讚返回首頁）
   if (phase === "result") {
     if (isThumbsUp(pose)) {
       if (!thumbsUpStartTime) thumbsUpStartTime = Date.now();
@@ -496,23 +515,25 @@ function setStatus(text) {
 }
 
 // ==================================================
-// 完美貼合人體形狀的磁鐵聚集包覆
+// 完美貼合人體形狀的磁鐵吸附演算法
 // ==================================================
 function attractParticlesToBody(pose) {
   let targetCenters = [];
   if (pose && pose.length >= 33) {
-    // 依據 Mediapipe 身體關節點（頭、肩膀、手肘、手腕、軀幹、骨盆、膝蓋）精準對齊人體輪廓
-    const keyIndices = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26];
-    keyIndices.forEach(idx => {
-      const pt = pose[idx];
+    pose.forEach(pt => {
       targetCenters.push({ x: (1 - pt.x) * W, y: pt.y * H });
     });
-    // 透過關節間的內插點與高密度網格，讓標誌完全服貼人體身體形狀
-    for (let i = 0; i < 70; i++) {
-      targetCenters.push({
-        x: W * 0.25 + Math.random() * W * 0.5,
-        y: H * 0.08 + Math.random() * H * 0.85
-      });
+
+    for (let i = 0; i < pose.length - 1; i++) {
+      const p1 = pose[i];
+      const p2 = pose[i+1];
+      for (let step = 1; step <= 3; step++) {
+        const t = step / 4;
+        targetCenters.push({
+          x: (1 - (p1.x * (1 - t) + p2.x * t)) * W,
+          y: (p1.y * (1 - t) + p2.y * t) * H
+        });
+      }
     }
   } else {
     for (let i = 0; i < 80; i++) {
@@ -528,8 +549,8 @@ function attractParticlesToBody(pose) {
     el.startY = el.y;
     const target = targetCenters[index % targetCenters.length];
     
-    el.targetX = target.x + (Math.random() - 0.5) * 40;
-    el.targetY = target.y + (Math.random() - 0.5) * 40;
+    el.targetX = target.x + (Math.random() - 0.5) * 25;
+    el.targetY = target.y + (Math.random() - 0.5) * 25;
     el.startTime = performance.now();
     el.progress = 0;
   });
@@ -597,6 +618,8 @@ function showResult() {
   ictx.translate(300, 0);
   ictx.scale(-1, 1);
 
+  const sourceImage = frozenVideoSnapshot || video;
+
   if (latestFaceBox) {
     const cx = latestFaceBox.x + latestFaceBox.w / 2;
     const cy = latestFaceBox.y + latestFaceBox.h / 2;
@@ -605,9 +628,9 @@ function showResult() {
     const sx = Math.max(0, cx - cropW / 2);
     const sy = Math.max(0, latestFaceBox.y - latestFaceBox.h * 0.8);
 
-    ictx.drawImage(video, sx, sy, cropW, cropH, 0, 0, 300, 380);
+    ictx.drawImage(sourceImage, sx, sy, cropW, cropH, 0, 0, 300, 380);
   } else {
-    ictx.drawImage(video, (W - 300) / 2, (H - 380) / 2, 300, 380, 0, 0, 300, 380);
+    ictx.drawImage(sourceImage, (W - 300) / 2, (H - 380) / 2, 300, 380, 0, 0, 300, 380);
   }
   ictx.restore();
 
@@ -629,6 +652,8 @@ window.restartSystemToIntro = function() {
   okStartTime = null;
   capturedPose = null;
   latestFaceBox = null;
+  frozenVideoSnapshot = null;
+  holdStartTime = null;
   thumbsUpStartTime = null;
   initParticles();
 
